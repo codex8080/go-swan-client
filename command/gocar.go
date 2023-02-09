@@ -91,8 +91,8 @@ func (cc *faseCommPCallback) OnSuccess(node ipld.Node, graphName, fsDetail strin
 	var err error
 	cpRes := &graphsplit.CommPRet{}
 	carSize := utils.GetFileSize(carfilepath)
-	if carSize > 17825792 { //16G
-		logs.GetLogger().Debug("using fast calculation of pieceCID")
+	if carSize > 17179869184 { //16G 17179869184
+		logs.GetLogger().Info("###### using fast calculation of piece cid ######")
 		pieceCid, unPadSize, err := fastcalc.FastCommP(carfilepath)
 		if err != nil {
 			logs.GetLogger().Fatal(err)
