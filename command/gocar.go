@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"github.com/filswan/go-swan-lib/client/lotus"
 	"io/ioutil"
+	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/filswan/go-swan-client/config"
+	"github.com/filswan/go-swan-client/extern/fastcalc"
 	"github.com/google/uuid"
 
 	"github.com/filswan/go-swan-lib/logs"
@@ -20,6 +23,7 @@ import (
 	"github.com/codingsince1985/checksum"
 	"github.com/filedrive-team/go-graphsplit"
 	libmodel "github.com/filswan/go-swan-lib/model"
+	ipld "github.com/ipfs/go-ipld-format"
 )
 
 type CmdGoCar struct {
@@ -76,6 +80,69 @@ func RestoreCarFilesByConfig(inputDir string, outputDir *string, parallel int) e
 	return nil
 }
 
+type faseCommPCallback struct {
+	carDir string
+}
+
+func (cc *faseCommPCallback) OnSuccess(node ipld.Node, graphName, fsDetail string) {
+	commpStartTime := time.Now()
+	carfilepath := path.Join(cc.carDir, node.Cid().String()+".car")
+
+	var err error
+	cpRes := &graphsplit.CommPRet{}
+	carSize := utils.GetFileSize(carfilepath)
+	if carSize > 17825792 { //16G
+		logs.GetLogger().Debug("using fast calculation of pieceCID")
+		pieceCid, unPadSize, err := fastcalc.FastCommP(carfilepath)
+		if err != nil {
+			logs.GetLogger().Fatal(err)
+		}
+		cpRes.Root = pieceCid
+		cpRes.Size = unPadSize
+	} else {
+		cp, err := graphsplit.CalcCommP(context.TODO(), carfilepath)
+		if err != nil {
+			logs.GetLogger().Fatal(err)
+		}
+		cpRes.Root = cp.Root
+		cpRes.Size = cp.Size
+	}
+
+	logs.GetLogger().Infof("calculation %s: cid=%s size=%d,", carfilepath, cpRes.Root, cpRes.Size)
+	logs.GetLogger().Infof("calculation of pieceCID completed, time elapsed: %s", time.Now().Sub(commpStartTime))
+	// Add node inof to manifest.csv
+	manifestPath := path.Join(cc.carDir, "manifest.csv")
+	_, err = os.Stat(manifestPath)
+	if err != nil && !os.IsNotExist(err) {
+		logs.GetLogger().Fatal(err)
+	}
+	var isCreateAction bool
+	if err != nil && os.IsNotExist(err) {
+		isCreateAction = true
+	}
+	f, err := os.OpenFile(manifestPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		logs.GetLogger().Fatal(err)
+	}
+	defer f.Close()
+	if isCreateAction {
+		if _, err := f.Write([]byte("playload_cid,filename,piece_cid,piece_size,detail\n")); err != nil {
+			logs.GetLogger().Fatal(err)
+		}
+	}
+	if _, err := f.Write([]byte(fmt.Sprintf("%s,%s,%s,%d,%s\n", node.Cid(), graphName, cpRes.Root.String(), cpRes.Size, fsDetail))); err != nil {
+		logs.GetLogger().Fatal(err)
+	}
+}
+
+func (cc *faseCommPCallback) OnError(err error) {
+	logs.GetLogger().Fatal(err)
+}
+
+func FastCommPCallback(carDir string) graphsplit.GraphBuildCallback {
+	return &faseCommPCallback{carDir: carDir}
+}
+
 func (cmdGoCar *CmdGoCar) CreateGoCarFiles() ([]*libmodel.FileDesc, error) {
 	err := utils.CheckDirExists(cmdGoCar.InputDir, DIR_NAME_INPUT)
 	if err != nil {
@@ -104,7 +171,8 @@ func (cmdGoCar *CmdGoCar) CreateGoCarFiles() ([]*libmodel.FileDesc, error) {
 
 	carDir := cmdGoCar.OutputDir
 	Emptyctx := context.Background()
-	cb := graphsplit.CommPCallback(carDir)
+
+	cb := FastCommPCallback(carDir)
 
 	if cmdGoCar.GocarFolderBased {
 		parentPath := cmdGoCar.InputDir
